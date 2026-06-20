@@ -1,11 +1,11 @@
 const express = require('express');
-const { SMTPServer } = require('smtp-server');
+const net = require('net'); // حزمة مدمجة تلقائياً في Node.js لا تحتاج تثبيت!
 const app = express();
 
 app.use(express.json());
 
-// دالة مشتركة لإرسال البريد إلى بريفو عبر الـ API الآمن المفتوح
-async function sendToBrevoAPI(to, subject, html, text) {
+// دالة تمرير البيانات الرسمية لبريفو عبر الـ API الآمن
+async function sendToBrevoAPI(to, subject, content) {
   try {
     const response = await fetch('https://api.brevo.com/v3/smtp/email', {
       method: 'POST',
@@ -17,56 +17,69 @@ async function sendToBrevoAPI(to, subject, html, text) {
       body: JSON.stringify({
         "sender": { "name": "King DZ Forum", "email": "crackingdz8@gmail.com" },
         "to": [{ "email": to }],
-        "subject": subject,
-        "htmlContent": html || text,
-        "textContent": text
+        "subject": subject || "إشعار جديد من المنتدى",
+        "htmlContent": content,
+        "textContent": content.replace(/<[^>]*>/g, '') // إزالة وسوم HTML للنص العادي
       })
     });
     const data = await response.json();
-    console.log('تم التمرير بنجاح إلى بريفو:', data.messageId);
+    console.log('تم تمرير الرسالة بنجاح عبر الجسر إلى بريفو:', data.messageId);
     return true;
   } catch (err) {
-    console.error('فشل التمرير لبريفو:', err);
+    console.error('خطأ في إرسال الـ API لبريفو:', err);
     return false;
   }
 }
 
-// 1. استقبال الطلبات القادمة من موقع ReqBin أو الوجاهات (HTTP)
+// واجهة الويب لطلبات الـ HTTP العادية والفحص
 app.post('/send-email', async (req, res) => {
   const { to, subject, text, html } = req.body;
-  const success = await sendToBrevoAPI(to, subject, html, text);
+  const success = await sendToBrevoAPI(to, subject, html || text);
   if (success) res.json({ success: true });
   else res.status(500).json({ success: false });
 });
 
-// تشغيل واجهة الويب على المنفذ الافتراضي لـ Render
 const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => {
-  console.log(`واجهة الويب تعمل على المنفذ ${PORT}`);
+  console.log(`واجهة الويب تعمل بنجاح على المنفذ ${PORT}`);
 });
 
-// 2. بناء سيرفر SMTP داخلي مجاني ليستقبل الرسائل من المنتدى مباشرة
-const smtpServer = new SMTPServer({
-  secure: false,
-  disabledCommands: ['AUTH'], // بدون تعقيدات كلمات مرور لأن الاتصال خاص بك
-  onData(stream, session, callback) {
-    let buffer = '';
-    stream.on('data', (chunk) => { buffer += chunk; });
-    stream.on('end', async () => {
-      // هنا يقوم الجسر بقراءة الرسالة القادمة من منتدى NodeBB وتحويلها فوراً لـ API
-      console.log('استقبل الجسر رسالة SMTP من المنتدى، جاري تحويلها لـ API...');
-      
-      // استخراج البيانات الأساسية بشكل مبسط ليمر التفعيل
-      const toMatch = session.envelope.to[0].address;
-      const subjectMatch = "إشعار من المنتدى"; 
-      
-      await sendToBrevoAPI(toMatch, subjectMatch, buffer, buffer);
-      callback();
-    });
-  }
+// محاكي سيرفر SMTP خفيف ومبسط ومبني بالكامل بـ Net الصافي لاستقبال رسائل المنتدى
+const smtpServer = net.createServer((socket) => {
+  socket.write('220 brevo-relay.onrender.com ESMTP\r\n');
+  let emailData = '';
+  let recipient = '';
+
+  socket.on('data', async (data) => {
+    const text = data.toString();
+    emailData += text;
+
+    if (text.toUpperCase().startsWith('RCPT TO:')) {
+      const match = text.match(/<([^>]+)>/);
+      if (match) recipient = match[1];
+    }
+
+    if (text.endsWith('\r\n.\r\n') || text.includes('\r\n.\r\n')) {
+      socket.write('250 OK: Message accepted for delivery\r\n');
+      socket.end();
+
+      if (recipient) {
+        console.log(`استقبل الجسر رسالة من المنتدى موجهة إلى: ${recipient}، جاري التمرير...`);
+        // استخراج المحتوى بين الأسطر الفارغة وإرساله
+        const bodyStart = emailData.indexOf('\r\n\r\n');
+        const mailBody = bodyStart !== -1 ? emailData.substring(bodyStart + 4) : emailData;
+        await sendToBrevoAPI(recipient, "تفعيل الحساب - منتدى King DZ", mailBody);
+      }
+      return;
+    }
+
+    if (!text.includes('\r\n.\r\n')) {
+      socket.write('250 OK\r\n');
+    }
+  });
 });
 
-// تشغيل سيرفر الـ SMTP البديل على المنفذ 5000 (المفتوح دائمًا في ريندر للاتصال الداخلي)
+// تشغيل محاكي الاستقبال على المنفذ 5000 المفتوح داخلياً في ريندر
 smtpServer.listen(5000, () => {
-  console.log('جسر الـ SMTP الداخلي يعمل بنجاح على المنفذ 5000');
+  console.log('مستقبل الـ SMTP الذكي يعمل بنجاح على المنفذ 5000');
 });
