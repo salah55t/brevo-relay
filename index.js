@@ -1,10 +1,10 @@
 const express = require('express');
-const net = require('net'); // حزمة مدمجة تلقائياً في Node.js لا تحتاج تثبيت!
+const net = require('net');
 const app = express();
 
 app.use(express.json());
 
-// دالة تمرير البيانات الرسمية لبريفو عبر الـ API الآمن
+// دالة إرسال الـ API لبريفو
 async function sendToBrevoAPI(to, subject, content) {
   try {
     const response = await fetch('https://api.brevo.com/v3/smtp/email', {
@@ -19,21 +19,28 @@ async function sendToBrevoAPI(to, subject, content) {
         "to": [{ "email": to }],
         "subject": subject || "إشعار جديد من المنتدى",
         "htmlContent": content,
-        "textContent": content.replace(/<[^>]*>/g, '') // إزالة وسوم HTML للنص العادي
+        "textContent": content ? content.replace(/<[^>]*>/g, '') : ''
       })
     });
     const data = await response.json();
-    console.log('تم تمرير الرسالة بنجاح عبر الجسر إلى بريفو:', data.messageId);
+    console.log('تم التمرير بنجاح لبريفو:', data.messageId);
     return true;
   } catch (err) {
-    console.error('خطأ في إرسال الـ API لبريفو:', err);
+    console.error('خطأ بريفو API:', err);
     return false;
   }
 }
 
-// واجهة الويب لطلبات الـ HTTP العادية والفحص
+// واجهة الويب والكرون جوب لتبقيه مستيقظاً دون إرسال إيميلات حقيقية تستهلك الحساب
 app.post('/send-email', async (req, res) => {
   const { to, subject, text, html } = req.body;
+  
+  // إذا كان الطلب مجرد اختبار تنشيط (Ping) من الكرون جوب، لا ترسل بريداً حقيقياً
+  if (to === "ping@internal.local" || !to) {
+    console.log("⚡ تم استقبال إشارة التنشيط (Keep-Alive) بنجاح والسيرفر مستيقظ!");
+    return res.json({ success: true, status: "awake" });
+  }
+
   const success = await sendToBrevoAPI(to, subject, html || text);
   if (success) res.json({ success: true });
   else res.status(500).json({ success: false });
@@ -41,11 +48,16 @@ app.post('/send-email', async (req, res) => {
 
 const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => {
-  console.log(`واجهة الويب تعمل بنجاح على المنفذ ${PORT}`);
+  console.log(`واجهة الويب مستقرة على المنفذ ${PORT}`);
 });
 
-// محاكي سيرفر SMTP خفيف ومبسط ومبني بالكامل بـ Net الصافي لاستقبال رسائل المنتدى
+// مستقبل SMTP ذكي ومحمي من الانهيارات المفاجئة
 const smtpServer = net.createServer((socket) => {
+  // حماية السوكيت ومعالجة خطأ ECONNRESET لمنع انهيار السيرفر
+  socket.on('error', (err) => {
+    console.log('🔄 تم التعامل مع إعادة تعيين اتصال آمن (Connection Reset) دون انهيار السيرفر.');
+  });
+
   socket.write('220 brevo-relay.onrender.com ESMTP\r\n');
   let emailData = '';
   let recipient = '';
@@ -60,12 +72,11 @@ const smtpServer = net.createServer((socket) => {
     }
 
     if (text.endsWith('\r\n.\r\n') || text.includes('\r\n.\r\n')) {
-      socket.write('250 OK: Message accepted for delivery\r\n');
+      socket.write('250 OK: Message accepted\r\n');
       socket.end();
 
       if (recipient) {
-        console.log(`استقبل الجسر رسالة من المنتدى موجهة إلى: ${recipient}، جاري التمرير...`);
-        // استخراج المحتوى بين الأسطر الفارغة وإرساله
+        console.log(`📨 استلم الجسر رسالة متوجهة إلى: ${recipient}`);
         const bodyStart = emailData.indexOf('\r\n\r\n');
         const mailBody = bodyStart !== -1 ? emailData.substring(bodyStart + 4) : emailData;
         await sendToBrevoAPI(recipient, "تفعيل الحساب - منتدى King DZ", mailBody);
@@ -73,13 +84,12 @@ const smtpServer = net.createServer((socket) => {
       return;
     }
 
-    if (!text.includes('\r\n.\r\n')) {
+    if (socket.writable && !text.includes('\r\n.\r\n')) {
       socket.write('250 OK\r\n');
     }
   });
 });
 
-// تشغيل محاكي الاستقبال على المنفذ 5000 المفتوح داخلياً في ريندر
 smtpServer.listen(5000, () => {
-  console.log('مستقبل الـ SMTP الذكي يعمل بنجاح على المنفذ 5000');
+  console.log('مستقبل SMTP محمي ويعمل على المنفذ 5000');
 });
