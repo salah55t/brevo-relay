@@ -1,11 +1,25 @@
-const SMTPServer = require('smtp-server').SMTPServer;
-const simpleParser = require('mailparser').simpleParser;
+const express = require('express');
+const { SMTPServer } = require('smtp-server');
+const { simpleParser } = require('mailparser');
+
+const app = express();
 
 const BREVO_API_KEY = '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';
 const SENDER_EMAIL = 'crackingdz8@gmail.com';
 const SENDER_NAME = 'King DZ Forum';
 
-// دالة إرسال الـ API لبريفو
+// 1. واجهة الويب البسيطة لاستقبال طلبات الكرون جوب (حتى لا ينام السيرفر)
+app.get('/', (req, res) => {
+  console.log('⏰ تم استقبال طلب Ping من الكرون جوب بنجاح والسيرفر مستيقظ!');
+  res.status(200).send('Server is Alive and Awake!');
+});
+
+const WEB_PORT = process.env.PORT || 10000;
+app.listen(WEB_PORT, () => {
+  console.log(`🌐 واجهة الويب مستقرة وتستمع للكرون جوب على المنفذ العام ${WEB_PORT}`);
+});
+
+// 2. دالة إرسال الـ API لبريفو
 async function sendToBrevo(to, subject, html, text) {
   try {
     const response = await fetch('https://api.brevo.com/v3/smtp/email', {
@@ -17,23 +31,23 @@ async function sendToBrevo(to, subject, html, text) {
       },
       body: JSON.stringify({
         "sender": { "name": SENDER_NAME, "email": SENDER_EMAIL },
-        "to": [{ "email": to }],
+        "to": [{ "email": to.trim() }],
         "subject": subject || "إشعار من المنتدى",
-        "htmlContent": html || text || "رسالة فارغة",
+        "htmlContent": html || text || "رسالة اختبارية",
         "textContent": text || ""
       })
     });
-    const data = await response.json();
-    console.log(`✅ تم التمرير بنجاح إلى الإيميل الحقيقي: [${to}]`);
+    await response.json();
+    console.log(`✅ تم تمرير البريد بنجاح للمستقبل الحقيقي: [${to}]`);
   } catch (err) {
     console.error('❌ فشل إرسال الـ API لبريفو:', err);
   }
 }
 
-// إنشاء سيرفر SMTP حقيقي ومستقر
-const server = new SMTPServer({
-  authOptional: true, 
-  disabledCommands: ['STARTTLS'], // لمنع مشاكل التشفير المعقدة مع ريندر
+// 3. سيرفر الـ SMTP الحقيقي للاستماع داخلياً على المنفذ 5000
+const smtpServer = new SMTPServer({
+  authOptional: true,
+  disabledCommands: ['STARTTLS'],
   onData(stream, session, callback) {
     simpleParser(stream, {}, async (err, parsed) => {
       if (err) {
@@ -41,33 +55,20 @@ const server = new SMTPServer({
         return callback(err);
       }
 
-      // استخراج الإيميل الحقيقي الذي وضعه المنتدى في خانة المستقبل (To)
       const dynamicTo = parsed.to && parsed.to.text ? parsed.to.text : null;
-      
-      console.log(`📨 الإيميل المستهدف الملتقط من طلب الـ SMTP هو: ${dynamicTo}`);
+      console.log(`📨 تم التقاط طلب SMTP للمستقبل: ${dynamicTo}`);
 
       if (dynamicTo) {
-        // تمرير البيانات ديناميكياً للإيميل الحقيقي
         await sendToBrevo(dynamicTo, parsed.subject, parsed.html, parsed.text);
       } else {
-        console.log("⚠️ لم يتم العثور على إيميل مستقبل في الحزمة، سيتم الإرسال للإيميل الافتراضي.");
         await sendToBrevo(SENDER_EMAIL, parsed.subject, parsed.html, parsed.text);
       }
-
       callback();
     });
   }
 });
 
-// تشغيل الواجهة الوهمية للمنفذ 10000 لإرضاء Render
-const express = require('express');
-const app = express();
-app.all('/', (req, res) => res.send('SMTP Relay is Live!'));
-app.listen(process.env.PORT || 10000, () => {
-  console.log(`🚀 واجهة الويب مستقرة على المنفذ 10000`);
-});
-
-// تشغيل سيرفر الـ SMTP الفعلي على المنفذ 5000
-server.listen(5000, () => {
-  console.log(`🔒 خادم الـ SMTP المحلي يعمل بنجاح ويستمع على المنفذ 5000`);
+// تشغيل سيرفر الـ SMTP داخلياً
+smtpServer.listen(5000, () => {
+  console.log(`🔒 خادم الـ SMTP المحلي يعمل ويستمع داخلياً على المنفذ 5000`);
 });
