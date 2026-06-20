@@ -1,70 +1,76 @@
 const express = require('express');
-const app = express();
+const { SMTPServer } = require('smtp-server');
+const { simpleParser } = require('mailparser');
 
-// إعدادات قراءة البيانات القادمة من المنتدى (يدعم الصيغتين)
+const app = express();
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// دالة تمرير البيانات الرسمية لبريفو عبر الـ API الآمن
-async function sendToBrevoAPI(to, subject, content) {
+const BREVO_API_KEY = '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';
+const SENDER_EMAIL = 'crackingdz8@gmail.com';
+const SENDER_NAME = 'King DZ Forum';
+
+// دالة شحن البريد عبر الـ API الرسمي لبريفو
+async function sendToBrevo(to, subject, html, text) {
   try {
     const response = await fetch('https://api.brevo.com/v3/smtp/email', {
       method: 'POST',
       headers: {
         'accept': 'application/json',
-        'api-key': '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',
+        'api-key': BREVO_API_KEY,
         'content-type': 'application/json'
       },
       body: JSON.stringify({
-        "sender": { "name": "King DZ Forum", "email": "crackingdz8@gmail.com" },
+        "sender": { "name": SENDER_NAME, "email": SENDER_EMAIL },
         "to": [{ "email": to }],
-        "subject": subject || "إشعار جديد من المنتدى",
-        "htmlContent": content,
-        "textContent": content ? content.replace(/<[^>]*>/g, '') : 'إشعار جديد'
+        "subject": subject || "إشعار من المنتدى",
+        "htmlContent": html || text,
+        "textContent": text || ""
       })
     });
     const data = await response.json();
-    console.log('✅ تم تمرير الرسالة بنجاح عبر الجسر إلى بريفو:', data.messageId);
-    return true;
+    console.log('✅ تم تمرير الرسالة بنجاح لـ Brevo:', data.messageId || data);
   } catch (err) {
-    console.error('❌ خطأ في إرسال الـ API لبريفو:', err);
-    return false;
+    console.error('❌ فشل إرسال الـ API لبريفو:', err);
   }
 }
 
-// 1. استقبال طلبات التنشيط (Cron Job) العادية
-app.post('/send-email', async (req, res) => {
-  console.log("⚡ تم استقبال إشارة التنشيط (Keep-Alive) بنجاح والسيرفر مستيقظ!");
-  return res.json({ success: true, status: "awake" });
+// 1. واجهة الويب وعمليات فحص الاتصال (HTTP)
+app.post('/send-email', (req, res) => res.json({ success: true, status: "Web service is running" }));
+app.all('/', (req, res) => res.send('SMTP Gateway is Live!'));
+
+// تشغيل واجهة الويب على المنفذ الافتراضي ل ريندر
+const HTTP_PORT = process.env.PORT || 10000;
+app.listen(HTTP_PORT, () => {
+  console.log(`🚀 واجهة الويب مستقرة على المنفذ ${HTTP_PORT}`);
 });
 
-// 2. المحاكي الذكي لاستقبال طلبات إضافة Mailgun من المنتدى وتوجيهها لبريفو تلقائياً!
-// الإضافة القديمة في NodeBB ترسل الطلبات دائماً إلى مسار يحتوي على /messages
-app.post('*/messages', async (req, res) => {
-  console.log('📦 تم التقاط طلب إرسال من إضافة Mailgun المعلقة في المنتدى!');
-  
-  // استخراج البيانات القادمة من إضافة المنتدى
-  const to = req.body.to;
-  const subject = req.body.subject;
-  const html = req.body.html || req.body.text;
+// 2. بناء خادم الـ SMTP الفعلي لاستقبال طلبات المنتدى المباشرة
+const smtpServer = new SMTPServer({
+  secure: false, // بدون تشفير معقد ليتناسب مع البيئة الحرة
+  disabledCommands: ['AUTH'], // إلغاء الحاجة لاسم مستخدم وكلمة مرور لتسهيل الربط
+  onData(stream, session, callback) {
+    simpleParser(stream, {}, async (err, parsed) => {
+      if (err) {
+        console.error('❌ خطأ أثناء تحليل بيانات البريد:', err);
+        return callback(err);
+      }
+      
+      const toEmail = parsed.to && parsed.to.text;
+      const subject = parsed.subject;
+      const html = parsed.html;
+      const text = parsed.text;
 
-  if (!to) {
-    console.log('⚠️ تم استقبال طلب فارغ أو فحص اتصال من المنتدى.');
-    return res.json({ message: "Queued. Thank you.", id: "mock-id-123" });
+      console.log(`📦 التقاط رسالة SMTP موجهة إلى: ${toEmail}`);
+      if (toEmail) {
+        await sendToBrevo(toEmail, subject, html, text);
+      }
+      return callback();
+    });
   }
-
-  console.log(`📨 جاري تحويل الرسالة الموجهة إلى [${to}] نحو سيرفر بريفو...`);
-  await sendToBrevoAPI(to, subject, html);
-
-  // رد وهمي بنجاح العملية لكي يظن المنتدى أن ميل غان أرسلها بنجاح
-  return res.json({
-    message: "Queued. Thank you.",
-    id: `mock-mailgun-${Date.now()}`
-  });
 });
 
-// تشغيل السيرفر على المنفذ الافتراضي لـ ريندر
-const PORT = process.env.PORT || 10000;
-app.listen(PORT, () => {
-  console.log(`🚀 جسر محاكاة Mailgun يعمل بثبات وأمان على المنفذ ${PORT}`);
+// تشغيل خادم الـ SMTP على المنفذ المستقر 5000
+smtpServer.listen(5000, '0.0.0.0', () => {
+  console.log('🔒 خادم الـ SMTP المحلي يعمل بنجاح ويستمع على المنفذ 5000');
 });
